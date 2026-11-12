@@ -48,12 +48,22 @@ const coins: Coin[] = prelim.map(c => {
   const shrink = n / (n + 5);
   return { ...c, trend: medianTrend + (c.rawTrend - medianTrend) * shrink };
 });
-coins.sort((a, b) => b.last + Math.max(-0.4, Math.min(0.4, b.trend)) * 2 - (a.last + Math.max(-0.4, Math.min(0.4, a.trend)) * 2) || a.mint.localeCompare(b.mint));
+const mintOrder = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+coins.sort((a, b) => b.last + Math.max(-0.4, Math.min(0.4, b.trend)) * 2 - (a.last + Math.max(-0.4, Math.min(0.4, a.trend)) * 2) || mintOrder(a.mint, b.mint));
 const candidates = coins.slice(0, 300);
 const indexByMint = new Map(candidates.map((c, i) => [c.mint, i]));
 const places = task.places;
 const reads = task.reads.map(x => Date.parse(x) / 3_600_000);
-const sims = 2000;
+const sims = 4000;
+let observedTopFiveTurnover = 0;
+let turnoverIntervals = 0;
+for (let i = 1; i < marks.length; i++) {
+  const previousTop = new Set(marks[i - 1]!.rows!.slice(0, 5).map(row => row.mint));
+  const currentTop = new Set(marks[i]!.rows!.slice(0, 5).map(row => row.mint));
+  observedTopFiveTurnover += 5 - [...previousTop].filter(mint => currentTop.has(mint)).length;
+  turnoverIntervals++;
+}
+const topFiveTurnoverRate = turnoverIntervals ? observedTopFiveTurnover / (5 * turnoverIntervals) : 0.5;
 const rankCounts = Array.from({ length: places }, () => new Map<string, number>());
 const sizeCounts = Array.from({ length: places }, () => new Array(82).fill(0) as number[]);
 const rng = (() => { let a = 0x6d2b79f5; return () => { a |= 0; a = a + 0x6d2b79f5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; })();
@@ -74,7 +84,7 @@ for (const read of reads) {
       if (rng() < deathP) size -= 2.0 + rng() * 2.0;
       return { i: indexByMint.get(c.mint)!, mint: c.mint, size };
     });
-    draws.sort((a, b) => b.size - a.size || a.mint.localeCompare(b.mint));
+    draws.sort((a, b) => b.size - a.size || mintOrder(a.mint, b.mint));
     for (let p = 0; p < places; p++) {
       const d = draws[p]!;
       const c = candidates[d.i]!;
@@ -90,9 +100,9 @@ const total = sims * reads.length;
 for (const c of candidates) { c.expectedRank /= total; c.p1 /= total; }
 const probabilities: Array<{ mint: string; place: number; p: number }> = [];
 for (let p = 0; p < places; p++) {
-  // Practice top-five overlap averaged only 2.5/5 across adjacent marks; preserve
-  // more unnamed probability for churn and entrants, especially at lower places.
-  const newcomer = 0.25 + 0.04 * p;
+  // Adapt unnamed mass to measured top-five churn (dev history: 3/5 per mark).
+  // Longer-horizon ranks also get more entrant room at lower places.
+  const newcomer = Math.min(0.62, 0.20 + topFiveTurnoverRate * 0.30 + 0.035 * p);
   const ranked = [...rankCounts[p]!.entries()].map(([mint, n]) => [mint, n / total] as const).filter(([, prob]) => prob >= 0.001).sort((a, b) => b[1] - a[1]).slice(0, 100);
   const sum = ranked.reduce((a, [, prob]) => a + prob, 0);
   const scale = sum ? (1 - newcomer) / sum : 0;
@@ -107,5 +117,5 @@ for (let p = 0; p < places; p++) {
     if (prob > 0) sizes.push({ place: p + 1, bin: b, p: prob });
   }
 }
-const top5 = [...candidates].sort((a, b) => a.expectedRank - b.expectedRank || b.p1 - a.p1 || a.mint.localeCompare(b.mint)).slice(0, places).map(c => c.mint);
+const top5 = [...candidates].sort((a, b) => a.expectedRank - b.expectedRank || b.p1 - a.p1 || mintOrder(a.mint, b.mint)).slice(0, places).map(c => c.mint);
 writeFileSync(join(outputDir, task.output), `${JSON.stringify({ probabilities, top5, sizes })}\n`);
